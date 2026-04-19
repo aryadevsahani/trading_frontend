@@ -1,24 +1,36 @@
 ﻿import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import socket from "../services/socket";
-import { Button, Spinner } from "react-bootstrap";
-import { Layers } from "lucide-react";
+import { Button, Spinner, Dropdown, Form } from "react-bootstrap";
+import { Settings2, Layers } from "lucide-react";
 
 const normalizeOptionItem = (item) => {
   if (!item) return null;
-  const strike = item.strike || item.strikePrice || item.strike_price;
+  const strike = item.strike || item.strikePrice || item.strike_price || 0;
   const type = item.option_type || (item.symbol?.includes("CE") ? "CE" : "PE");
+
   return {
     strike: Number(strike),
     type: type.toUpperCase(),
     ltp: item.ltp || item.lp || 0,
     volume: item.volume || item.v || 0,
     oi: item.oi || 0,
+    oiChange: (item.oich !== undefined) ? Number(item.oich) : 0,
+    oiChangePercent: (item.oichp !== undefined) ? Number(item.oichp) : 0,
+    iv: item.iv || 0,
     symbol: item.symbol
   };
 };
 
-export default function OptionChain({ symbol: propSymbol, onTrade }) {
+const AVAILABLE_COLUMNS = [
+  { id: "oi", label: "OI" },
+  { id: "oiChange", label: "OI Chg" },
+  { id: "oiChangePercent", label: "OI Chg%" },
+  { id: "volume", label: "Volume" },
+  { id: "ltp", label: "LTP" }
+];
+
+export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
   const { symbol: urlSymbol } = useParams();
   const activeSymbol = useMemo(() => urlSymbol || propSymbol || "NSE:NIFTY50-INDEX", [urlSymbol, propSymbol]);
 
@@ -27,71 +39,45 @@ export default function OptionChain({ symbol: propSymbol, onTrade }) {
   const [selectedExpiry, setSelectedExpiry] = useState("");
   const [selectedStrikeCount, setSelectedStrikeCount] = useState(20);
   const [spotPrice, setSpotPrice] = useState(0);
+  const [spotData, setSpotData] = useState({ ch: 0, chp: 0 });
   const [loading, setLoading] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState(["oi", "oiChange", "ltp"]);
+
   const token = localStorage.getItem("accessToken");
 
-  // --- API: Load Chain Data (Memoized to prevent loops) ---
   const loadChainData = useCallback(async (expiry) => {
-    console.log("Fetching new data for:", expiry);
     if (!expiry || !activeSymbol) return;
     setLoading(true);
-    setData({});
     try {
       const res = await fetch("http://localhost:5000/api/option-chain", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-        body: JSON.stringify({
-          symbol: activeSymbol,
-          expiry,
-          strikeCount: selectedStrikeCount
-        }),
+        body: JSON.stringify({ symbol: activeSymbol, expiry, strikeCount: selectedStrikeCount }),
       });
       const result = await res.json();
       const items = result.data?.optionsChain || result.optionsChain || [];
-
       const mapped = {};
       items.forEach(item => {
         const n = normalizeOptionItem(item);
-        if (n?.strike) mapped[`${n.strike}_${n.type}`] = n;
+        if (n && n.strike > 0) mapped[`${n.strike}_${n.type}`] = n;
       });
-
       setData(mapped);
-      // Naye expiry ke symbols subscribe karein
       socket.emit("subscribe-option-chain", items.map(i => i.symbol));
-    } catch (err) {
-      console.error("OC Fetch Error:", err);
-    } finally {
-      setLoading(false);
-    }
+    } catch (err) { console.error(err); } finally { setLoading(false); }
   }, [activeSymbol, selectedStrikeCount, token]);
 
-  // --- EFFECT: Initial Symbol Load & Spot Update ---
   useEffect(() => {
-    const initChain = async () => {
-      setLoading(true);
-      socket.emit("subscribe-watchlist", [activeSymbol]);
-      try {
-        const res = await fetch("http://localhost:5000/api/option-chain", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-          body: JSON.stringify({ symbol: activeSymbol })
-        });
-        const result = await res.json();
-        const expiryData = result.data?.expiryData || result.expiryData;
-        if (expiryData?.length > 0) {
-          const expiryList = expiryData.map(e => e.expiry);
-          setExpiries(expiryList);
-          setSelectedExpiry(expiryList[0]); // Ye trigger karega loadChainData ko niche wale useEffect mein
-        }
-      } catch (err) { console.error(err); }
-      setLoading(false);
-    };
-
-    initChain();
-
     const handleUpdate = (update) => {
-      if (update[activeSymbol]) setSpotPrice(update[activeSymbol].lp || update[activeSymbol].ltp || 0);
-
+      if (update[activeSymbol]) {
+        const s = update[activeSymbol];
+        setSpotPrice(s.lp || s.ltp || 0);
+        // Ensure percent is calculated if backend sends 0.00
+        setSpotData({
+          ch: s.ch || 0,
+          chp: s.chp || (s.ch && s.lp ? (s.ch / (s.lp - s.ch)) * 100 : 0)
+        });
+      }
+      // Data update logic for table
       setData(prev => {
         const newState = { ...prev };
         let hasUpdate = false;
@@ -99,52 +85,107 @@ export default function OptionChain({ symbol: propSymbol, onTrade }) {
           const found = Object.values(newState).find(item => item.symbol === sym);
           if (found) {
             const key = `${found.strike}_${found.type}`;
-            newState[key] = { ...found, ltp: update[sym].lp || update[sym].ltp || found.ltp };
+            const up = update[sym];
+            newState[key] = {
+              ...found,
+              ltp: up.lp || up.ltp || found.ltp,
+              oi: up.oi !== undefined ? up.oi : found.oi,
+              oiChange: up.oich !== undefined ? up.oich : found.oiChange,
+              oiChangePercent: up.oichp !== undefined ? up.oichp : found.oiChangePercent
+            };
             hasUpdate = true;
           }
         });
         return hasUpdate ? newState : prev;
       });
     };
-
     socket.on("market-update", handleUpdate);
     return () => socket.off("market-update", handleUpdate);
+  }, [activeSymbol]);
+
+  useEffect(() => {
+    const init = async () => {
+      const res = await fetch("http://localhost:5000/api/option-chain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ symbol: activeSymbol })
+      });
+      const result = await res.json();
+      const list = (result.data?.expiryData || result.expiryData || []).map(e => e.expiry);
+      setExpiries(list);
+      if (list.length) setSelectedExpiry(list[0]);
+    }
+    init();
   }, [activeSymbol, token]);
 
-  // --- EFFECT: Triggered when Expiry Changes (FIXED) ---
-  useEffect(() => {
-    if (selectedExpiry) {
-      loadChainData(selectedExpiry);
-    }
-  }, [selectedExpiry, loadChainData]);
+  useEffect(() => { if (selectedExpiry) loadChainData(selectedExpiry); }, [selectedExpiry, loadChainData]);
 
   const sortedStrikes = useMemo(() => {
-    const all = [...new Set(Object.values(data).map(d => d.strike))].sort((a, b) => a - b);
-    if (!all.length) return [];
-    if (spotPrice > 0) {
-      const closest = all.map(s => ({ s, diff: Math.abs(s - spotPrice) })).sort((a, b) => a.diff - b.diff).slice(0, selectedStrikeCount).map(x => x.s);
-      return closest.sort((a, b) => a - b);
-    }
-    return all.slice(0, selectedStrikeCount);
-  }, [data, spotPrice, selectedStrikeCount]);
+    return [...new Set(Object.values(data).map(d => d.strike))].sort((a, b) => a - b);
+  }, [data]);
+
+  const renderCells = (strike, side) => {
+    const item = data[`${strike}_${side}`] || { ltp: 0, oi: 0, oiChange: 0, oiChangePercent: 0 };
+    const isITM = side === "CE" ? strike < spotPrice : strike > spotPrice;
+
+    const cols = side === "CE"
+      ? AVAILABLE_COLUMNS.filter(c => visibleColumns.includes(c.id))
+      : [...AVAILABLE_COLUMNS].filter(c => visibleColumns.includes(c.id)).reverse();
+
+    return cols.map(col => {
+      if (col.id === "ltp") {
+        return (
+          <td key={col.id} className={`action-td ${isITM ? "itm-cell" : ""}`}>
+            <span className="fw-bold ltp-val">{item.ltp.toFixed(2)}</span>
+            <div className="trade-btns">
+              <Button variant="success" size="sm" onClick={() => onTrade(item, "BUY")}>B</Button>
+              <Button variant="danger" size="sm" onClick={() => onTrade(item, "SELL")}>S</Button>
+            </div>
+          </td>
+        );
+      }
+      const val = item[col.id] || 0;
+      const isColor = col.id.includes("oiChange");
+      return (
+        <td key={col.id} className={isITM ? "itm-cell" : ""}>
+          <span className={isColor ? (val >= 0 ? "text-success" : "text-danger") : ""}>
+            {col.id === "oiChangePercent" ? `${val >= 0 ? "+" : ""}${val.toFixed(2)}%` : val.toLocaleString()}
+          </span>
+        </td>
+      );
+    });
+  };
 
   return (
-    <div className="oc-container h-100 d-flex flex-column theme-adaptive">
-      <div className="oc-header p-2 d-flex justify-content-between align-items-center border-bottom">
-        <div className="d-flex align-items-center gap-2">
-          <span className="fw-bold text-primary">{activeSymbol.split(":")[1]}</span>
-          <span className="spot-price-tag">₹{spotPrice.toFixed(2)}</span>
+    <div className={`oc-container h-100 d-flex flex-column theme-adaptive ${theme === 'dark' ? 'dark-mode' : ''}`}>
+      {/* Header with explicit styles for visibility */}
+      <div className="oc-header p-2 d-flex justify-content-between align-items-center">
+        <div className="d-flex align-items-center gap-3">
+          <span className="fw-bold text-primary symbol-title">{activeSymbol.split(":")[1]}</span>
+          <div className="text-start spot-info">
+            <div className="fw-bold spot-price">₹{spotPrice.toFixed(2)}</div>
+            <div className={spotData.ch >= 0 ? "text-success" : "text-danger"} style={{ fontSize: '12px', fontWeight: '500' }}>
+              {spotData.ch >= 0 ? "+" : ""}{spotData.ch.toFixed(2)} ({spotData.chp.toFixed(2)}%)
+            </div>
+          </div>
         </div>
+
         <div className="d-flex gap-2">
-          <select className="form-select-sm theme-select" value={selectedStrikeCount} onChange={e => setSelectedStrikeCount(Number(e.target.value))}>
-            {[10, 20, 40].map(c => <option key={c} value={c}>{c} Strikes</option>)}
+          <Dropdown align="end">
+            <Dropdown.Toggle variant="outline-secondary" size="sm" className="no-caret shadow-none border"><Settings2 size={16} /></Dropdown.Toggle>
+            <Dropdown.Menu className="p-3 shadow custom-dropdown-menu">
+              {AVAILABLE_COLUMNS.map(col => (
+                <Form.Check key={col.id} id={`check-${col.id}`} label={col.label} checked={visibleColumns.includes(col.id)}
+                  onChange={() => setVisibleColumns(prev => prev.includes(col.id) ? prev.filter(c => c !== col.id) : [...prev, col.id])}
+                />
+              ))}
+            </Dropdown.Menu>
+          </Dropdown>
+          <select className="form-select form-select-sm theme-select w-auto" value={selectedStrikeCount} onChange={e => setSelectedStrikeCount(Number(e.target.value))}>
+            {[5, 10, 20, 40, 60, 100].map(c => <option key={c} value={c}>{c} Strikes</option>)}
           </select>
-          <select className="form-select-sm theme-select" value={selectedExpiry} onChange={e => setSelectedExpiry(e.target.value)}>
-            {expiries.map(ex => (
-              <option key={ex} value={ex}>
-                {new Date(ex * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
-              </option>
-            ))}
+          <select className="form-select form-select-sm theme-select w-auto" value={selectedExpiry} onChange={e => setSelectedExpiry(e.target.value)}>
+            {expiries.map(ex => <option key={ex} value={ex}>{new Date(ex * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</option>)}
           </select>
         </div>
       </div>
@@ -152,107 +193,142 @@ export default function OptionChain({ symbol: propSymbol, onTrade }) {
       <div className="flex-grow-1 overflow-auto custom-scrollbar">
         <table className="oc-table w-100">
           <thead>
+            {/* Main Header */}
             <tr className="main-head">
-              <th colSpan="3" className="text-success border-end border-oc">CALLS</th>
-              <th className="border-oc">STRIKE</th>
-              <th colSpan="3" className="text-danger border-start border-oc">PUTS</th>
+              <th colSpan={visibleColumns.length} className="text-success border-end">CALLS</th>
+              <th className="strike-header">STRIKE</th>
+              <th colSpan={visibleColumns.length} className="text-danger border-start">PUTS</th>
             </tr>
+
+            {/* Sub Header - यहाँ कॉलम के नाम दिखेंगे */}
             <tr className="sub-head">
-               <th>OI</th><th>VOL</th><th className="border-end border-oc">LTP</th>
-               <th></th>
-               <th className="border-start border-oc">LTP</th><th>VOL</th><th>OI</th>
+              {/* Calls side columns */}
+              {AVAILABLE_COLUMNS.filter(c => visibleColumns.includes(c.id)).map(col => (
+                <th key={`ce-${col.id}`}>{col.label}</th>
+              ))}
+
+              {/* Center Strike label */}
+              <th className="strike-header">PRICE</th>
+
+              {/* Puts side columns (reversed to maintain symmetry) */}
+              {[...AVAILABLE_COLUMNS].filter(c => visibleColumns.includes(c.id)).reverse().map(col => (
+                <th key={`pe-${col.id}`}>{col.label}</th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-                <tr><td colSpan="7" className="text-center py-5"><Spinner animation="border" variant="primary" /></td></tr>
-            ) : sortedStrikes.length > 0 ? (
-                sortedStrikes.map(strike => {
-                    const ce = data[`${strike}_CE`] || { ltp: 0 };
-                    const pe = data[`${strike}_PE`] || { ltp: 0 };
-                    return (
-                        <tr key={strike}>
-                            <td className={strike < spotPrice ? "itm-cell" : ""}>{ce.oi || 0}</td>
-                            <td className={strike < spotPrice ? "itm-cell" : ""}>{ce.volume || 0}</td>
-                            <td className={`action-td border-end border-oc ${strike < spotPrice ? "itm-cell" : ""}`}>
-                                <span className="ltp-val">{ce.ltp.toFixed(2)}</span>
-                                <div className="trade-btns">
-                                    <Button variant="success" size="sm" onClick={() => onTrade(ce, "BUY")}>B</Button>
-                                    <Button variant="danger" size="sm" onClick={() => onTrade(ce, "SELL")}>S</Button>
-                                </div>
-                            </td>
-                            <td className="strike-val">{strike}</td>
-                            <td className={`action-td border-start border-oc ${strike > spotPrice ? "itm-cell" : ""}`}>
-                                <span className="ltp-val">{pe.ltp.toFixed(2)}</span>
-                                <div className="trade-btns">
-                                    <Button variant="success" size="sm" onClick={() => onTrade(pe, "BUY")}>B</Button>
-                                    <Button variant="danger" size="sm" onClick={() => onTrade(pe, "SELL")}>S</Button>
-                                </div>
-                            </td>
-                            <td className={strike > spotPrice ? "itm-cell" : ""}>{pe.volume || 0}</td>
-                            <td className={strike > spotPrice ? "itm-cell" : ""}>{pe.oi || 0}</td>
-                        </tr>
-                    );
-                })
-            ) : (
-                <tr>
-                    <td colSpan="7" className="text-center py-5">
-                        <div className="empty-state">
-                            <Layers size={40} className="text-muted mb-2" />
-                            <h6 className="adaptive-text">ऑप्शन चेन उपलब्ध नहीं है</h6>
-                            <p className="text-muted small">सिंबल {activeSymbol.split(":")[1]} के लिए डेटा नहीं मिला।</p>
+            {sortedStrikes.map((strike, idx) => {
+              const nextStrike = sortedStrikes[idx + 1];
+              const isSpotHere = spotPrice >= strike && spotPrice < (nextStrike || Infinity);
+              return (
+                <React.Fragment key={strike}>
+                  <tr>
+                    {renderCells(strike, "CE")}
+                    <td className="strike-val">{strike}</td>
+                    {renderCells(strike, "PE")}
+                  </tr>
+                  {isSpotHere && (
+                    <tr className="spot-row">
+                      <td colSpan={visibleColumns.length * 2 + 1}>
+                        <div className="spot-line">
+                          {/* LTP | Change | Change% फॉर्मेट */}
+                          <span className="spot-val">
+                            ₹{spotPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </span>
+                          <span className="spot-sep">  |  </span>
+                          <span className={`spot-chg ${spotData.ch >= 0 ? "text-success-bright" : "text-danger-bright"}`}>
+                            {spotData.ch >= 0 ? "+" : ""}{spotData.ch.toFixed(2)} ({spotData.chp.toFixed(2)}%)
+                          </span>
                         </div>
-                    </td>
-                </tr>
-            )}
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
 
       <style>{`
-  .theme-adaptive {
-    --oc-bg: #ffffff;
-    --oc-text: #212529;
-    --oc-border: #eeeeee;
-    --oc-header-bg: #fcfcfc;
-    --oc-itm-bg: #fff9e6; /* Light Yellow for ITM */
-    --oc-strike-bg: #f8f9fa;
-    --oc-strike-text: #212529;
-    background: var(--oc-bg);
-    color: var(--oc-text);
-  }
+      
+        /* Theme Variables */
+        .theme-adaptive { 
+          --oc-bg: #ffffff; 
+          --oc-text: #212529; 
+          --oc-header: #f8f9fa;
+          --oc-border: #dee2e6; 
+          --oc-itm: #fff9e6; 
+          --oc-strike-bg: #f1f3f5;
+        }
+        
+        .dark-mode, [data-theme='dark'] .theme-adaptive { 
+          --oc-bg: #121212; 
+          --oc-text: #e0e0e0; 
+          --oc-header: #1e1e1e;
+          --oc-border: #333333; 
+          --oc-itm: #1a1a10; 
+          --oc-strike-bg: #1e1e1e;
+        }
+        
+        .oc-container { background: var(--oc-bg); color: var(--oc-text); min-height: 100%; transition: all 0.2s ease; }
+        
+        .oc-header { 
+          background: var(--oc-header); 
+          border-bottom: 1px solid var(--oc-border); 
+          color: var(--oc-text);
+          min-height: 60px;
+        }
 
-  [data-theme='dark'] .theme-adaptive {
-    --oc-bg: #161b22;
-    --oc-text: #c9d1d9;
-    --oc-border: #30363d;
-    --oc-header-bg: #0d1117;
-    --oc-itm-bg: #1c2128; /* Darker Blue-grey for ITM */
-    --oc-strike-bg: #0d1117;
-    --oc-strike-text: #58a6ff;
-  }
+        .symbol-title { font-size: 1.1rem; }
+        .spot-price { font-size: 1.2rem; color: var(--oc-text); }
+        
+        .oc-table th { 
+          text-align: center;
+          background: var(--oc-header); 
+          border: 1px solid var(--oc-border); 
+          color: var(--oc-text);
+          font-size: 11px; 
+          padding: 8px; 
+          position: sticky; 
+          top: 0; 
+          z-index: 10; 
+        }
+        
+        .oc-table td { text-align:center;border: 1px solid var(--oc-border); padding: 10px 5px; text-align: center; font-size: 12px; color: var(--oc-text); }
+        
+        .strike-val { background: var(--oc-strike-bg); font-weight: bold; color: #2196f3; min-width: 80px; }
+        .strike-header { background: var(--oc-strike-bg) !important; color: #2196f3 !important; }
+        .itm-cell { background: var(--oc-itm) !important; }
+        
+        .spot-row td { padding: 0 !important; border: none !important; text-align: center; background: transparent !important; }
+        .spot-line {
+          background: #343a40; /* डार्क ग्रे/ब्लैक बैकग्राउंड */
+          color: #ffffff;
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          padding: 4px 25px;
+          border-radius: 20px;
+          font-weight: 600;
+          font-size: 13px;
+          margin: 5px 0;
+          box-shadow: 0 2px 4px rgba(222, 13, 13, 0.2);
+        }
 
-  .oc-header { background: var(--oc-header-bg); border-bottom: 1px solid var(--oc-border); }
-  .theme-select { background: var(--oc-bg); color: var(--oc-text); border: 1px solid var(--oc-border); cursor: pointer; }
-  
-  .oc-table th { text-align: center; background: var(--oc-header-bg); border-bottom: 1px solid var(--oc-border); padding: 8px; font-size: 11px; }
-  .oc-table td { text-align: center; border-bottom: 1px solid var(--oc-border); padding: 10px 4px; font-size: 12px; }
-  .border-oc { border-color: var(--oc-border) !important; }
+        .theme-select { background: var(--oc-header); color: var(--oc-text); border-color: var(--oc-border); }
+        .custom-dropdown-menu { background: var(--oc-header) !important; color: var(--oc-text) !important; border: 1px solid var(--oc-border); }
+        .custom-dropdown-menu .form-check-label { color: var(--oc-text) !important; }
 
-  .strike-val { text-align: center; background: var(--oc-strike-bg); font-weight: bold; color: var(--oc-strike-text); }
-  .itm-cell { background: var(--oc-itm-bg) !important; }
+        .action-td { position: relative; min-width: 90px; cursor: pointer; }
+        .trade-btns { display: none; position: absolute; inset: 0; background: var(--oc-itm); align-items: center; justify-content: center; gap: 4px; z-index: 5; }
+        .action-td:hover .trade-btns { display: flex; }
+        .action-td:hover .ltp-val { visibility: hidden; }
 
-  .adaptive-text { color: var(--oc-text); }
-  .spot-price-tag { color: #f0b90b; font-weight: bold; background: rgba(240, 185, 11, 0.1); padding: 2px 6px; border-radius: 4px; }
-
-  .action-td { position: relative; min-width: 85px; }
-  .trade-btns { display: none; position: absolute; inset: 0; background: inherit; align-items: center; justify-content: center; gap: 4px; z-index: 2; }
-  .action-td:hover .trade-btns { display: flex; }
-  .action-td:hover .ltp-val { visibility: hidden; }
-  
-  .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-  .custom-scrollbar::-webkit-scrollbar-thumb { background: #30363d; border-radius: 10px; }
-`}</style>
+        .no-caret::after { display: none; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #555; border-radius: 10px; }
+      `}</style>
     </div>
   );
 }
