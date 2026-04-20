@@ -55,42 +55,43 @@ const MarketWatch = ({ onTrade, activeSymbol, onOpenOC }) => {
 
   // --- 3. SOCKET UPDATES (Fixed & Optimized) ---
   useEffect(() => {
-    if (items.length > 0) {
-      const symbols = items.map((i) => i.symbol);
+  if (items.length > 0) {
+    const symbols = items.map((i) => i.symbol);
 
-      // Backend ko batayein ki hume in symbols ka data chahiye
-      const timer = setTimeout(() => {
-        socket.emit("subscribe-watchlist", symbols);
-      }, 500);
+    // ✅ IMPORTANT
+    socket.emit("join-watchlist");
 
-      const handleUpdate = (liveData) => {
-        // liveData format: { "NSE:SBIN-EQ": { lp: 600, ch: 5, cp: 0.8 }, ... }
-        setItems((prevItems) =>
-          prevItems.map((item) => {
-            const update = liveData[item.symbol];
+    const timer = setTimeout(() => {
+      socket.emit("subscribe-watchlist", symbols);
+    }, 500);
 
-            if (update) {
-              return {
-                ...item,
-                p: update.lp.toFixed(2), // Price
-                chg: update.ch.toFixed(2), // Change
-                pct: update.cp.toFixed(2) + "%", // Change Percentage
-                up: update.ch >= 0, // Green/Red Logic
-              };
-            }
-            return item;
-          })
-        );
-      };
+    const handleUpdate = (liveData) => {
+      setItems((prevItems) =>
+        prevItems.map((item) => {
+          const update = liveData[item.symbol];
 
-      socket.on("market-update", handleUpdate);
+          if (update) {
+            return {
+              ...item,
+              p: update.lp.toFixed(2),
+              chg: update.ch.toFixed(2),
+              pct: update.cp.toFixed(2) + "%",
+              up: update.ch >= 0,
+            };
+          }
+          return item;
+        })
+      );
+    };
 
-      return () => {
-        clearTimeout(timer);
-        socket.off("market-update", handleUpdate);
-      };
-    }
-  }, [items.length]); // Items load hone par socket activate hoga
+    socket.on("watchlist-update", handleUpdate);
+
+    return () => {
+      clearTimeout(timer);
+      socket.off("watchlist-update", handleUpdate);
+    };
+  }
+}, [items]); // Items load hone par socket activate hoga
 
   const addItem = async (res) => {
     try {

@@ -13,6 +13,8 @@ const normalizeOptionItem = (item) => {
     strike: Number(strike),
     type: type.toUpperCase(),
     ltp: item.ltp || item.lp || 0,
+    ltpChange: item.ch || 0,
+    ltpChangePercent: item.cp || 0,
     volume: item.volume || item.v || 0,
     oi: item.oi || 0,
     oiChange: (item.oich !== undefined) ? Number(item.oich) : 0,
@@ -27,7 +29,9 @@ const AVAILABLE_COLUMNS = [
   { id: "oiChange", label: "OI Chg" },
   { id: "oiChangePercent", label: "OI Chg%" },
   { id: "volume", label: "Volume" },
-  { id: "ltp", label: "LTP" }
+  { id: "ltp", label: "LTP" },
+  { id: "ltpChange", label: "LTP Chg" },
+  { id: "ltpChangePercent", label: "LTP Chg%" }
 ];
 
 export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
@@ -37,11 +41,11 @@ export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
   const [data, setData] = useState({});
   const [expiries, setExpiries] = useState([]);
   const [selectedExpiry, setSelectedExpiry] = useState("");
-  const [selectedStrikeCount, setSelectedStrikeCount] = useState(20);
+  const [selectedStrikeCount, setSelectedStrikeCount] = useState(10);
   const [spotPrice, setSpotPrice] = useState(0);
   const [spotData, setSpotData] = useState({ ch: 0, chp: 0 });
   const [loading, setLoading] = useState(false);
-  const [visibleColumns, setVisibleColumns] = useState(["oi", "oiChange", "ltp"]);
+  const [visibleColumns, setVisibleColumns] = useState(["oi", "oiChange", "volume", "ltpChange", "ltp"]);
 
   const token = localStorage.getItem("accessToken");
 
@@ -66,41 +70,64 @@ export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
     } catch (err) { console.error(err); } finally { setLoading(false); }
   }, [activeSymbol, selectedStrikeCount, token]);
 
+  // 🔥 ONLY IMPORTANT CHANGE: socket event + setData
+
   useEffect(() => {
+    // ✅ join room (IMPORTANT)
+    socket.emit("join-option-chain");
+
     const handleUpdate = (update) => {
+
+      // 🔹 Spot update (index)
       if (update[activeSymbol]) {
         const s = update[activeSymbol];
         setSpotPrice(s.lp || s.ltp || 0);
-        // Ensure percent is calculated if backend sends 0.00
+
         setSpotData({
           ch: s.ch || 0,
           chp: s.chp || (s.ch && s.lp ? (s.ch / (s.lp - s.ch)) * 100 : 0)
         });
       }
-      // Data update logic for table
+
+      // 🔥 FIXED setData (minimal change)
       setData(prev => {
         const newState = { ...prev };
         let hasUpdate = false;
-        Object.keys(update).forEach(sym => {
-          const found = Object.values(newState).find(item => item.symbol === sym);
-          if (found) {
-            const key = `${found.strike}_${found.type}`;
-            const up = update[sym];
-            newState[key] = {
-              ...found,
-              ltp: up.lp || up.ltp || found.ltp,
-              oi: up.oi !== undefined ? up.oi : found.oi,
-              oiChange: up.oich !== undefined ? up.oich : found.oiChange,
-              oiChangePercent: up.oichp !== undefined ? up.oichp : found.oiChangePercent
-            };
-            hasUpdate = true;
+
+        Object.entries(update).forEach(([sym, up]) => {
+          for (const key in newState) {
+            const item = newState[key];
+
+            if (item.symbol === sym) {
+              newState[key] = {
+                ...item,
+                chp: up.chp ?? item.chp,
+                ch: up.ch ?? item.ch,
+                ltp: up.lp || up.ltp || item.ltp,
+                ltpChange: up.ch ?? item.ltpChange,
+                ltpChangePercent: up.cp ?? item.cp,
+                volume: up.v ?? item.volume,
+                oi: up.oi ?? item.oi,
+                oiChange: up.oich ?? item.oiChange,
+                oiChangePercent: up.oichp ?? item.oiChangePercent
+              };
+              hasUpdate = true;
+              break; // ✅ important
+            }
           }
         });
+
         return hasUpdate ? newState : prev;
       });
     };
-    socket.on("market-update", handleUpdate);
-    return () => socket.off("market-update", handleUpdate);
+
+    // ❌ OLD: market-update
+    // ✅ NEW:
+    socket.on("option-chain-update", handleUpdate);
+
+    return () => {
+      socket.off("option-chain-update", handleUpdate);
+    };
   }, [activeSymbol]);
 
   useEffect(() => {
@@ -121,8 +148,31 @@ export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
   useEffect(() => { if (selectedExpiry) loadChainData(selectedExpiry); }, [selectedExpiry, loadChainData]);
 
   const sortedStrikes = useMemo(() => {
-    return [...new Set(Object.values(data).map(d => d.strike))].sort((a, b) => a - b);
-  }, [data]);
+  const strikes = [...new Set(Object.values(data).map(d => d.strike))].sort((a, b) => a - b);
+
+  if (!spotPrice || strikes.length === 0) return strikes;
+
+  const atmIndex = strikes.findIndex(s => s >= spotPrice);
+  const total = selectedStrikeCount;
+
+  let start = atmIndex - Math.floor(total / 2);
+  let end = atmIndex + Math.ceil(total / 2);
+
+  // 🔧 Adjust if start goes negative
+  if (start < 0) {
+    end += Math.abs(start);
+    start = 0;
+  }
+
+  // 🔧 Adjust if end goes beyond length
+  if (end > strikes.length) {
+    const extra = end - strikes.length;
+    start = Math.max(0, start - extra);
+    end = strikes.length;
+  }
+
+  return strikes.slice(start, end);
+}, [data, spotPrice, selectedStrikeCount]);
 
   const renderCells = (strike, side) => {
     const item = data[`${strike}_${side}`] || { ltp: 0, oi: 0, oiChange: 0, oiChangePercent: 0 };
@@ -145,11 +195,11 @@ export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
         );
       }
       const val = item[col.id] || 0;
-      const isColor = col.id.includes("oiChange");
+      const isColor = col.id.includes("oiChange") || col.id === "ltpChange" || col.id === "ltpChangePercent";
       return (
         <td key={col.id} className={isITM ? "itm-cell" : ""}>
           <span className={isColor ? (val >= 0 ? "text-success" : "text-danger") : ""}>
-            {col.id === "oiChangePercent" ? `${val >= 0 ? "+" : ""}${val.toFixed(2)}%` : val.toLocaleString()}
+            {col.id === "oiChangePercent" || col.id === "ltpChangePercent" ? `${val >= 0 ? "+" : ""}${val.toFixed(2)}%` : val.toLocaleString()}
           </span>
         </td>
       );
@@ -182,7 +232,7 @@ export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
             </Dropdown.Menu>
           </Dropdown>
           <select className="form-select form-select-sm theme-select w-auto" value={selectedStrikeCount} onChange={e => setSelectedStrikeCount(Number(e.target.value))}>
-            {[5, 10, 20, 40, 60, 100].map(c => <option key={c} value={c}>{c} Strikes</option>)}
+            {[10, 20, 30, 40, 50].map(c => <option key={c} value={c}>{c} Strikes</option>)}
           </select>
           <select className="form-select form-select-sm theme-select w-auto" value={selectedExpiry} onChange={e => setSelectedExpiry(e.target.value)}>
             {expiries.map(ex => <option key={ex} value={ex}>{new Date(ex * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</option>)}
@@ -260,6 +310,7 @@ export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
           --oc-border: #dee2e6; 
           --oc-itm: #fff9e6; 
           --oc-strike-bg: #f1f3f5;
+          --spot-bg: #f1f3f5;
         }
         
         .dark-mode, [data-theme='dark'] .theme-adaptive { 
@@ -269,6 +320,7 @@ export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
           --oc-border: #333333; 
           --oc-itm: #1a1a10; 
           --oc-strike-bg: #1e1e1e;
+          --spot-bg: #2d2d2d;
         }
         
         .oc-container { background: var(--oc-bg); color: var(--oc-text); min-height: 100%; transition: all 0.2s ease; }
@@ -303,8 +355,8 @@ export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
         
         .spot-row td { padding: 0 !important; border: none !important; text-align: center; background: transparent !important; }
         .spot-line {
-          background: #343a40; /* डार्क ग्रे/ब्लैक बैकग्राउंड */
-          color: #ffffff;
+          background: var(--spot-bg);
+          color: var(--oc-text);
           display: inline-flex;
           align-items: center;
           gap: 10px;
@@ -315,7 +367,8 @@ export default function OptionChain({ symbol: propSymbol, onTrade, theme }) {
           margin: 5px 0;
           box-shadow: 0 2px 4px rgba(222, 13, 13, 0.2);
         }
-
+        .text-success-bright { color: #2ecc71 !important; font-weight: bold; }
+        .text-danger-bright { color: #ff5e5e !important; font-weight: bold; }
         .theme-select { background: var(--oc-header); color: var(--oc-text); border-color: var(--oc-border); }
         .custom-dropdown-menu { background: var(--oc-header) !important; color: var(--oc-text) !important; border: 1px solid var(--oc-border); }
         .custom-dropdown-menu .form-check-label { color: var(--oc-text) !important; }
