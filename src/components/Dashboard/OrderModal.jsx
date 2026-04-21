@@ -1,304 +1,258 @@
 import React, { useState, useEffect } from "react";
-import { Modal, Button, Form, Row, Col } from "react-bootstrap";
-import { ArrowLeftRight } from "lucide-react";
+import { Form, Row, Col } from "react-bootstrap";
+import { ArrowLeftRight, GripHorizontal, ChevronDown, ChevronUp } from "lucide-react";
+import Draggable from "react-draggable";
 
-const OrderModal = ({
-  show,
-  handleClose,
-  stock,
-  type,
-  onSubmit,
-  liveData,
-  funds,
-}) => {
+/**
+ * Calculation Logic for Indian Market Charges
+ */
+const calculateTradingCharges = (qty, price, product, isBuy) => {
+  const q = Number(qty) || 0;
+  const p = Number(price) || 0;
+  const turnover = q * p;
+  if (turnover === 0) return { total: 0, breakdown: [] };
+
+  const brokerage = product === "MIS" ? Math.min(turnover * 0.0003, 20) : 0;
+  let stt = product === "MIS" ? (!isBuy ? turnover * 0.00025 : 0) : turnover * 0.001;
+  const exchangeCharges = turnover * 0.0000322;
+  const gst = (brokerage + exchangeCharges) * 0.18;
+  const sebiCharges = turnover * 0.0000001;
+  const stampDuty = isBuy ? turnover * 0.00015 : 0;
+  const total = brokerage + stt + exchangeCharges + gst + sebiCharges + stampDuty;
+
+  return {
+    total,
+    breakdown: [
+      { name: "Brokerage", value: brokerage },
+      { name: "STT/CTT", value: stt },
+      { name: "Exchange Trxn Chg", value: exchangeCharges },
+      { name: "GST (18%)", value: gst },
+      { name: "SEBI Fees", value: sebiCharges },
+      { name: "Stamp Duty", value: stampDuty }
+    ]
+  };
+};
+
+const OrderModal = ({ show, handleClose, stock, type, onSubmit, liveData, funds, theme }) => {
   const [side, setSide] = useState(type);
   const [qty, setQty] = useState(1);
   const [price, setPrice] = useState(0);
   const [orderType, setOrderType] = useState("MARKET");
-  const [product, setProduct] = useState("MIS");
+  const [product, setProduct] = useState("CNC");
   const [showCharges, setShowCharges] = useState(false);
 
   const isBuy = side === "BUY";
   const isMarket = orderType === "MARKET";
+  const isDark = theme === "dark";
 
-  // Initial setup
+  // Initial Price & Side Sync
   useEffect(() => {
     if (show && stock) {
       setSide(type);
-      setQty(1);
-      setOrderType("MARKET");
-      setProduct("MIS");
-      setShowCharges(false);
-
-      const initialPrice =
-        liveData?.[stock.symbol]?.lp ||
-        parseFloat(String(stock.p).replace(/,/g, "")) ||
-        0;
-
-      setPrice(initialPrice);
+      const currentLtp = liveData?.[stock.symbol]?.ltp || stock.p || 0;
+      setPrice(Number(currentLtp));
     }
   }, [show, stock, type]);
 
-  // Live price update
+  // Live Price Sync (Only for Market Orders)
   useEffect(() => {
-    if (show && isMarket && stock?.symbol && liveData) {
-      const liveLTP = liveData[stock.symbol]?.lp;
-      if (liveLTP) setPrice(liveLTP);
+    if (show && isMarket && stock?.symbol) {
+      const ltp = liveData?.[stock.symbol]?.ltp || liveData?.[stock.symbol]?.lp || stock.p;
+      if (ltp) setPrice(Number(ltp));
     }
-  }, [liveData, isMarket, stock?.symbol, show]);
+  }, [liveData, isMarket, show, stock?.symbol]);
 
-  // Margin
-  const marginRequired =
-    product === "MIS" ? (qty * price) / 5 : qty * price;
+  const handleFocus = (e) => {
+    if (Number(e.target.value) === 0) {
+      e.target.name === "qty" ? setQty("") : setPrice("");
+    }
+  };
 
-  const isInvalid =
-    qty <= 0 || isNaN(qty) || marginRequired > funds;
+  const handleBlur = (e) => {
+    if (e.target.value === "" || Number(e.target.value) < 0) {
+      if (e.target.name === "qty") setQty(1);
+      else {
+        const ltp = liveData?.[stock?.symbol]?.ltp || stock?.p || 0;
+        setPrice(Number(ltp));
+      }
+    }
+  };
 
-  // Charges calculation
-  const turnover = qty * price;
+  const chargesData = calculateTradingCharges(qty, price, product, isBuy);
+  const marginRequired = product === "MIS" ? (Number(qty) * Number(price)) / 5 : (Number(qty) * Number(price));
+  const isInvalid = !qty || qty <= 0 || marginRequired > funds;
 
-  const brokerage = Math.min(turnover * 0.0003, 20);
-  const stt = side === "SELL" ? turnover * 0.001 : 0;
-  const exchangeTx = turnover * 0.0000325;
-  const gst = (brokerage + exchangeTx) * 0.18;
-  const sebi = turnover * 0.000001;
-  const stampDuty = side === "BUY" ? turnover * 0.00015 : 0;
-
-  const totalCharges =
-    brokerage + stt + exchangeTx + gst + sebi + stampDuty;
+  if (!show) return null;
 
   return (
-    <Modal
-      show={show}
-      onHide={handleClose}
-      centered
-      contentClassName="order-modal-content border-0"
-    >
-      {/* Header */}
-      <div className={`order-header ${isBuy ? "bg-primary" : "bg-danger"} p-3`}>
-        <div className="d-flex justify-content-between align-items-center text-white">
-          <div>
-            <h6 className="mb-0 fw-bold">
-              {side} {stock?.s}
-            </h6>
-            <small>LTP: ₹{price.toFixed(2)}</small>
-          </div>
-
-          <button
-            className="switch-btn"
-            onClick={() => setSide(isBuy ? "SELL" : "BUY")}
-          >
-            <ArrowLeftRight size={16} />
-          </button>
-        </div>
-      </div>
-
-      {/* BODY */}
-      <Modal.Body className="bg-black text-white p-4">
-
-        {/* Product Tabs */}
-        <div className="custom-tabs mb-3">
-          <div
-            className={`tab-item ${product === "MIS" ? "active" : ""}`}
-            onClick={() => setProduct("MIS")}
-          >
-            Intraday 5x
-          </div>
-          <div
-            className={`tab-item ${product === "CNC" ? "active" : ""}`}
-            onClick={() => setProduct("CNC")}
-          >
-            Longterm 1x
-          </div>
-        </div>
-
-        {/* Inputs */}
-        <Row className="g-3">
-          <Col xs={6}>
-            <Form.Control
-              type="number"
-              value={qty}
-              onChange={(e) =>
-                setQty(parseInt(e.target.value) || 0)
-              }
-              className="custom-input"
-              placeholder="Qty"
-            />
-          </Col>
-
-          <Col xs={6}>
-            <Form.Control
-              type="number"
-              value={price}
-              disabled={isMarket}
-              onChange={(e) =>
-                setPrice(parseFloat(e.target.value) || 0)
-              }
-              className="custom-input"
-            />
-          </Col>
-        </Row>
-
-        {/* Order Type */}
-        <div className="d-flex gap-3 mt-3">
-          <Form.Check
-            type="radio"
-            label="Market"
-            checked={isMarket}
-            onChange={() => setOrderType("MARKET")}
-          />
-          <Form.Check
-            type="radio"
-            label="Limit"
-            checked={!isMarket}
-            onChange={() => setOrderType("LIMIT")}
-          />
-        </div>
-
-        {/* Margin */}
-        <div className="margin-box mt-4">
-          <div className="d-flex justify-content-between">
-            <span>Margin Required</span>
-            <span>₹{marginRequired.toFixed(2)}</span>
-          </div>
-          <div
-            className="d-flex justify-content-between align-items-center"
-            onClick={() => setShowCharges(!showCharges)}
-            style={{ cursor: "pointer" }}
-          >
-            <span className="fw-bold">Charges</span>
-
-            <span className="d-flex align-items-center gap-2">
-              <span className="text-info fw-bold">
-                ₹{totalCharges.toFixed(2)}
-              </span>
-              <span>{showCharges ? "▲" : "▼"}</span>
-            </span>
-          </div>
-
-          {showCharges && (
-            <div className="charges-box mt-2">
-              <div className="d-flex justify-content-between">
-                <span>Brokerage</span>
-                <span>₹{brokerage.toFixed(2)}</span>
-              </div>
-
-              <div className="d-flex justify-content-between">
-                <span>STT</span>
-                <span>₹{stt.toFixed(2)}</span>
-              </div>
-
-              <div className="d-flex justify-content-between">
-                <span>Exchange Txn</span>
-                <span>₹{exchangeTx.toFixed(2)}</span>
-              </div>
-
-              <div className="d-flex justify-content-between">
-                <span>GST</span>
-                <span>₹{gst.toFixed(2)}</span>
-              </div>
-
-              <div className="d-flex justify-content-between">
-                <span>SEBI</span>
-                <span>₹{sebi.toFixed(2)}</span>
-              </div>
-
-              <div className="d-flex justify-content-between">
-                <span>Stamp Duty</span>
-                <span>₹{stampDuty.toFixed(2)}</span>
+    <div className="order-modal-wrapper">
+      <Draggable handle=".drag-handle">
+        <div className={`order-modal-container ${isDark ? "dark-mode" : ""}`}>
+          
+          {/* HEADER */}
+          <div className={`order-header drag-handle ${isBuy ? "header-buy" : "header-sell"}`}>
+            <div className="header-info">
+              <GripHorizontal size={16} className="drag-grip" />
+              <div className="header-labels">
+                <div className="symbol-name"><b>{side}</b> {stock?.s || stock?.symbol}</div>
+                <div className="ltp-info">LTP: ₹{Number(price).toFixed(2)}</div>
               </div>
             </div>
-          )}
+            <button className="switch-btn" onClick={() => setSide(isBuy ? "SELL" : "BUY")}>
+              <ArrowLeftRight size={16} />
+            </button>
+          </div>
+
+          <div className="order-body">
+            {/* PRODUCT SELECTOR */}
+            <div className="product-toggle">
+              <button 
+                className={`toggle-item ${product === "MIS" ? "active" : ""}`} 
+                onClick={() => setProduct("MIS")}
+              >MIS</button>
+              <button 
+                className={`toggle-item ${product === "CNC" ? "active" : ""}`} 
+                onClick={() => setProduct("CNC")}
+              >CNC</button>
+            </div>
+
+            {/* INPUT FIELDS */}
+            <Row className="mt-3 g-3">
+              <Col xs={6}>
+                <label className="input-label">Quantity</label>
+                <input
+                  name="qty"
+                  type="number"
+                  className="dark-style-input"
+                  value={qty}
+                  onFocus={handleFocus}
+                  onBlur={handleBlur}
+                  onChange={(e) => setQty(e.target.value === "" ? "" : Math.abs(e.target.value))}
+                />
+              </Col>
+              <Col xs={6}>
+                <label className="input-label">Price</label>
+                <input
+                  name="price"
+                  type="number"
+                  step="0.05"
+                  disabled={isMarket}
+                  className="dark-style-input"
+                  value={price}
+                  onFocus={handleFocus}
+                  onBlur={handleBlur}
+                  onChange={(e) => setPrice(e.target.value === "" ? "" : Math.abs(e.target.value))}
+                />
+              </Col>
+            </Row>
+
+            {/* ORDER TYPE SELECTION */}
+            <div className="order-type-tabs mt-3">
+              <label className="radio-option">
+                <input type="radio" checked={isMarket} onChange={() => setOrderType("MARKET")} />
+                <span>Market</span>
+              </label>
+              <label className="radio-option ms-4">
+                <input type="radio" checked={!isMarket} onChange={() => setOrderType("LIMIT")} />
+                <span>Limit</span>
+              </label>
+            </div>
+
+            {/* MARGIN & CHARGES PANEL */}
+            <div className="summary-panel mt-3">
+              <div className="summary-row main-margin">
+                <span>Margin Required</span>
+                <span className="price-bold">₹{marginRequired.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span>
+              </div>
+              
+              <div className="charges-dropdown">
+                <div className="summary-row charge-trigger" onClick={() => setShowCharges(!showCharges)}>
+                  <span>Estimated Charges</span>
+                  <div className="d-flex align-items-center">
+                    <span className="me-1">₹{chargesData.total.toFixed(2)}</span>
+                    {showCharges ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
+                  </div>
+                </div>
+                {showCharges && (
+                  <div className="charge-details">
+                    {chargesData.breakdown.map((item, index) => (
+                      <div key={index} className="detail-line">
+                        <span>{item.name}</span>
+                        <span>₹{item.value.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* FOOTER ACTION BUTTONS */}
+          <div className="order-footer">
+            <button 
+              className={`action-button ${isBuy ? "header-buy" : "header-sell"}`}
+              disabled={isInvalid}
+              onClick={() => onSubmit(qty, price, side, product)}
+            >
+              {marginRequired > funds ? "Insufficient Funds" : side}
+            </button>
+            <button className="cancel-button" onClick={handleClose}>Cancel</button>
+          </div>
         </div>
+      </Draggable>
 
-      </Modal.Body>
+      {/* BACKDROP WITHOUT BLUR */}
+      <div className="simple-backdrop" onClick={handleClose} />
 
-      {/* Footer */}
-      <div className="bg-dark p-3 d-flex gap-2">
-        <Button
-          variant={isBuy ? "primary" : "danger"}
-          className="flex-grow-1"
-          disabled={isInvalid}
-          onClick={() =>
-            onSubmit(qty, price, side, product)
-          }
-        >
-          {marginRequired > funds
-            ? "INSUFFICIENT FUNDS"
-            : `${side} ${stock?.s}`}
-        </Button>
-
-        <Button variant="outline-secondary" onClick={handleClose}>
-          Cancel
-        </Button>
-      </div>
-
-      {/* Styles */}
       <style>{`
-        .order-modal-content {
-          border-radius: 12px;
+        .order-modal-wrapper { position: fixed; inset: 0; z-index: 10000; font-family: 'Inter', sans-serif; }
+        .simple-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.3); }
+        
+        .order-modal-container {
+          position: absolute; top: 100px; left: 50%; transform: translateX(-50%);
+          width: 380px; background: white; border-radius: 8px; overflow: hidden;
+          box-shadow: 0 15px 40px rgba(0,0,0,0.3); z-index: 10001;
         }
 
-        .switch-btn {
-          background: #333;
-          border: none;
-          color: white;
-          padding: 6px;
-          border-radius: 6px;
-        }
+        .header-buy { background: #1369ff !important; }
+        .header-sell { background: #ff473d !important; }
+        
+        .order-header { padding: 12px 16px; color: white; display: flex; justify-content: space-between; align-items: center; cursor: move; }
+        .header-info { display: flex; align-items: flex-start; gap: 10px; }
+        .drag-grip { opacity: 0.6; margin-top: 4px; }
+        .symbol-name { font-size: 14px; font-weight: 600; }
+        .ltp-info { font-size: 12px; opacity: 0.9; margin-top: 2px; }
+        .switch-btn { background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; }
 
-        .custom-tabs {
-          display: flex;
-          gap: 5px;
-        }
+        .order-body { padding: 16px; }
+        
+        .product-toggle { display: flex; background: #f4f5f7; border-radius: 6px; padding: 4px; }
+        .toggle-item { flex: 1; border: none; background: transparent; padding: 8px; font-size: 13px; font-weight: 600; color: #666; border-radius: 4px; }
+        .toggle-item.active { background: #00daff; color: #000; }
 
-        .tab-item {
-          flex: 1;
-          text-align: center;
-          padding: 6px;
-          background: #111;
-          cursor: pointer;
-          border-radius: 6px;
-        }
+        .input-label { display: block; font-size: 13px; color: #777; margin-bottom: 6px; font-weight: 500; }
+        .dark-style-input { width: 100%; background: #111; color: white; border: 1px solid #333; padding: 10px; border-radius: 6px; font-weight: bold; font-family: 'Roboto Mono', monospace; }
+        .dark-style-input:disabled { background: #222; color: #666; }
 
-        .tab-item.active {
-          background: #0dcaf0;
-          color: black;
-        }
+        .radio-option { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; }
+        
+        .summary-panel { background: #f9f9fb; border: 1px solid #eee; border-radius: 6px; overflow: hidden; }
+        .summary-row { display: flex; justify-content: space-between; padding: 10px 12px; font-size: 13px; }
+        .main-margin { border-bottom: 1px solid #eee; background: white; }
+        .price-bold { font-weight: 700; color: #111; }
+        
+        .charge-trigger { cursor: pointer; color: #888; }
+        .charge-trigger:hover { background: #f0f0f3; }
+        .charge-details { padding: 0 12px 10px; background: #fcfcfd; }
+        .detail-line { display: flex; justify-content: space-between; font-size: 11px; color: #999; padding: 2px 0; }
 
-        .custom-input {
-          background: #111 !important;
-          border: 1px solid #333 !important;
-          color: white !important;
-        }
-
-        .custom-input:disabled {
-          background: #0d1b2a !important;
-          color: #0dcaf0 !important;
-          opacity: 0.7;
-        }
-
-        .margin-box {
-          border: 1px dashed #444;
-          padding: 10px;
-          border-radius: 8px;
-        }
-
-        .charges-row {
-          background: rgba(255,255,255,0.02);
-          border: 1px solid #333;
-          border-radius: 8px;
-          padding: 10px;
-        }
-
-        .charges-box {
-          background: #111;
-          padding: 10px;
-          border-radius: 8px;
-          font-size: 12px;
-        }
+        .order-footer { padding: 12px 16px; border-top: 1px solid #eee; display: flex; gap: 12px; }
+        .action-button { flex: 2; border: none; padding: 10px; border-radius: 6px; color: white; font-weight: bold; text-transform: uppercase; font-size: 14px; }
+        .cancel-button { flex: 1; background: white; border: 1px solid #ddd; border-radius: 6px; color: #888; font-weight: 500; }
+        
+        .action-button:disabled { opacity: 0.5; }
       `}</style>
-    </Modal>
+    </div>
   );
 };
 
