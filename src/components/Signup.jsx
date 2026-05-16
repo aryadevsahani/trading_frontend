@@ -8,7 +8,7 @@ const Signup = ({ goToLogin, onSignupSuccess }) => {
     name: "",
     email: "",
     password: "",
-    username: ""
+    // username: ""
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -71,7 +71,7 @@ const Signup = ({ goToLogin, onSignupSuccess }) => {
             </InputGroup>
           </Form.Group>
 
-          {/* Username */}
+          {/* Username
           <Form.Group className="mb-3">
             <Form.Label className="small text-secondary mb-1">USERNAME</Form.Label>
             <InputGroup className="premium-input">
@@ -87,7 +87,7 @@ const Signup = ({ goToLogin, onSignupSuccess }) => {
                 required 
               />
             </InputGroup>
-          </Form.Group>
+          </Form.Group> */}
 
           {/* Email */}
           <Form.Group className="mb-3">
