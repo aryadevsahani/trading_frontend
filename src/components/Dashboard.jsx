@@ -8,7 +8,7 @@ import Positions from "../components/Dashboard/Positions";
 import OrderModal from "../components/Dashboard/OrderModal";
 import Holdings from "../components/Dashboard/Holdings";
 import Profile from "../components/Dashboard/Profile";
-import SimpleChart from "../components/Dashboard/SimpleChart";
+import SimpleChart from "./Dashboard/TradingChart";
 import MarketDepth from "../components/MarketDepth";
 import OptionChain from "./OptionChain";
 import Funds from "./Dashboard/Funds";
