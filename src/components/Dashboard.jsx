@@ -155,7 +155,10 @@ const Dashboard = ({ onLogout }) => {
           <Col lg={3} md={4} className="border-end border-thin h-100 bg-sidebar">
             <MarketWatch
               activeSymbol={selectedWatchlistSymbol}
-              onSymbolClick={(item) => setSelectedWatchlistSymbol(item.symbol)}
+              onSymbolClick={(item) => {
+                setSelectedWatchlistSymbol(item.symbol);
+                setActiveTab("DASHBOARD"); // ensure chart tab active
+              }}
               onTrade={triggerTrade}
               onOpenOC={(symbol) => {
                 setSelectedWatchlistSymbol(symbol);
@@ -165,16 +168,11 @@ const Dashboard = ({ onLogout }) => {
           </Col>
 
           {/* Dynamic Content Area */}
-          <Col lg={9} md={8} className="p-4 overflow-auto h-100 custom-scrollbar">
+          <Col lg={9} md={8} className="p-4 px-1 overflow-auto h-100 custom-scrollbar">
             {activeTab === "DASHBOARD" && (
-              <Row className="g-3">
-                <Col md={12}>
-                  <Card className="card-custom p-3 border-0 shadow-sm">
-                    <h6 className="text-secondary mb-2">Live Chart: {selectedWatchlistSymbol}</h6>
+          
                     <SimpleChart data={marketLiveData} symbol={selectedWatchlistSymbol} />
-                  </Card>
-                </Col>
-              </Row>
+                
             )}
 
             {activeTab === "OPTION_CHAIN" && <OptionChain symbol={selectedWatchlistSymbol} onTrade={triggerTrade} />}

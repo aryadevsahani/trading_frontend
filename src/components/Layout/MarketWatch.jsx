@@ -4,7 +4,7 @@ import { Search, Trash2, Plus, BarChart2, Layers } from "lucide-react";
 import socket from "../../services/socket";
 import { useNavigate } from "react-router-dom";
 
-const MarketWatch = ({ onTrade, activeSymbol, onOpenOC }) => {
+const MarketWatch = ({ onTrade, activeSymbol, onOpenOC, onSymbolClick }) => {
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState([]);
@@ -177,7 +177,7 @@ const MarketWatch = ({ onTrade, activeSymbol, onOpenOC }) => {
                       <Button variant="danger" size="sm" className="mx-1 px-3 fw-bold btn-kite" onClick={() => onTrade(item, "SELL")}>S</Button>
                     </>
                   )}
-                  <button className="icon-btn-kite" onClick={() => navigate(`/chart/${item.symbol}`)} title="Chart"><BarChart2 size={16} /></button>
+                  <button className="icon-btn-kite" onClick={() => onSymbolClick(item)} title="Chart"><BarChart2 size={16} /></button>
                   <button className="icon-btn-kite" onClick={() => onOpenOC(item.symbol)} title="Option Chain"><Layers size={16} /><span className="oc-label">OC</span></button>
                   <button className="icon-btn-kite text-danger" onClick={(e) => deleteItem(e, item.symbol)}><Trash2 size={16} /></button>
                 </div>
